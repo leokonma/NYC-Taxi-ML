@@ -14,7 +14,8 @@ data/
 
 notebooks/
     01_master_table_creation.ipynb
-    02_cleaning.ipynb
+    02_cleaninig.ipynb
+    03_model_comparison.ipynb
 ```
 
 **Why this structure?**
@@ -43,10 +44,12 @@ Main steps:
 - Sample ~1M trips per month
 - Merge all months into one dataset
 - Remove invalid trips:
+  - non-positive fares
   - negative/zero duration
   - zero distance
   - unrealistic speeds
-- Handle missing values (drop small corrupted subset)
+- Handle missing values and impossible passenger counts
+- Enrich pickup/dropoff locations with TLC zone metadata
 
 
 ## Final Dataset
