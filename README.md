@@ -1,178 +1,397 @@
 # NYC Taxi Fare Prediction
 
-## Project Summary
+## Resumen del proyecto
 
-This repository is a compact end-to-end machine learning project built on the 2019 NYC Yellow Taxi trip data. The objective is to predict `fare_amount` using information that would reasonably be known at or near pickup time, while avoiding obvious leakage from post-trip variables.
+Este repositorio desarrolla un flujo completo de machine learning para predecir `fare_amount` en viajes de NYC Yellow Taxi de 2019. El proyecto parte de archivos mensuales crudos, construye una tabla maestra reproducible, limpia los registros, crea variables seguras para modelaje, compara modelos de regresion, ajusta los mejores candidatos y termina con un notebook de interpretacion para explicar que esta aprendiendo el modelo.
 
-The project is organized as a notebook-based report. Each notebook represents one stage of the analytical pipeline:
+La idea central es estimar la tarifa usando informacion disponible antes o cerca del momento de recogida, evitando variables que solo se conocen al final del viaje o despues del pago. Por eso el proyecto no usa variables monetarias posteriores como `total_amount`, `tip_amount`, `tolls_amount` o cargos/surcharges finales como predictores.
 
-1. Build a unified master table from the monthly raw files.
-2. Clean the data and create a modeling-ready dataset.
-3. Compare several baseline and candidate regression models.
-4. Tune the strongest tree-based models and evaluate them in more detail.
+## Preguntas que responde
 
-Someone new to the project should be able to follow the story from raw data to final evaluation by reading the notebooks in order.
+1. Si es posible predecir la tarifa de taxi con buena precision usando distancia, calendario, hora y geografia.
+2. Que decisiones de limpieza son necesarias para que el target `fare_amount` sea confiable.
+3. Si modelos no lineales, como Random Forest y Gradient Boosting, mejoran sobre una linea base simple y una regresion Ridge.
+4. Cual modelo funciona mejor cuando se evalua cronologicamente en meses futuros.
+5. Que variables explican la mayor parte de las predicciones y en que segmentos el modelo todavia falla mas.
 
-## What This Project Answers
-
-The project is designed to answer four practical questions:
-
-1. Can taxi fare be predicted reasonably well from trip context, distance, calendar features, and pickup/dropoff geography?
-2. Which data-cleaning decisions matter most before modeling fare?
-3. Do more flexible nonlinear models outperform a simple baseline and a regularized linear model?
-4. Between tuned gradient boosting and tuned random forest, which model performs better on later, unseen months?
-
-## Repository Structure
+## Estructura del repositorio
 
 ```text
 data/
-  raw/                     Original source files
-  procesed/                Intermediate and modeling-ready datasets
+  raw/                       Archivos originales mensuales de NYC Yellow Taxi 2019
+  procesed/                  Datasets intermedios y finales en parquet
 
 notebooks/
   01_master_table_creation.ipynb
   02_cleaninig.ipynb
   03_model_comparison.ipynb
   04_hyperparameter_tuning_and_evaluation.ipynb
+  05_model_interpretation_and_reporting.ipynb
 
 reports/
-  models/                  Optional local model exports, ignored by git
+  models/                    Modelos entrenados locales; no se versionan en Git
 ```
 
-Important note:
-The project folder uses `procesed/` and `02_cleaninig.ipynb` as existing names. They are kept as-is for consistency with the current repository structure.
+Nota de nombres: el repositorio mantiene `data/procesed/` y `02_cleaninig.ipynb` tal como existen actualmente para no romper rutas ni dependencias entre notebooks.
 
-## Data and Scope
+## Datos y alcance
 
-- Source: NYC Yellow Taxi trip data for 2019
-- Granularity: trip-level records
-- Target: `fare_amount`
-- Primary use case: supervised regression for fare estimation
-- Modeling philosophy: use leakage-safe predictors and evaluate chronologically
+- Fuente: NYC Yellow Taxi trip data, ano 2019.
+- Granularidad: un registro por viaje.
+- Target: `fare_amount`.
+- Tipo de problema: regresion supervisada.
+- Evaluacion principal: particion cronologica, no aleatoria.
+- Entrenamiento final: enero a octubre de 2019.
+- Holdout final: noviembre y diciembre de 2019.
 
-The raw monthly files are large, so the pipeline first creates a balanced master sample and then works from parquet outputs for speed and reproducibility.
+El proyecto crea primero una muestra balanceada de 1,000,000 viajes por mes. Esto produce una tabla maestra de 12,000,000 filas antes de limpieza. Luego, despues de filtros de calidad, el dataset final de modelaje queda con 11,792,502 filas y 28 columnas.
 
-## Analytical Workflow
+## Documentos del proyecto, uno a uno
 
-### 1. Master Table Creation
+### 1. `01_master_table_creation.ipynb`: creacion de tabla maestra
 
-Notebook: [01_master_table_creation.ipynb](notebooks/01_master_table_creation.ipynb)
+Este notebook construye la base analitica del proyecto a partir de los 12 archivos mensuales de 2019.
 
-This stage loads the monthly 2019 CSV files, aligns their schemas, samples each month consistently, and combines them into one master parquet table. The main purpose is to create a stable and traceable analytical base table before any modeling decisions are made.
+Que hace:
 
-Key decisions:
-- use all 2019 monthly files
-- sample each month with a fixed random seed
-- align monthly schemas through the union of columns
-- preserve metadata such as `month` and `source_file`
-- save the consolidated output in parquet format
+- Localiza archivos con patron `yellow_tripdata_2019-*.csv`.
+- Valida que existan archivos fuente antes de continuar.
+- Calcula la union de columnas observadas en los meses para manejar diferencias de esquema.
+- Lee cada mes, lo muestrea a 1,000,000 filas cuando aplica y alinea las columnas.
+- Agrega metadatos de trazabilidad como `year`, `month` y `source_file`.
+- Concatena los 12 meses en una sola tabla maestra.
+- Guarda `data/procesed/master_2019_1M_per_month.parquet`.
 
-### 2. Cleaning and Feature Engineering
+Decisiones tomadas:
 
-Notebook: [02_cleaninig.ipynb](notebooks/02_cleaninig.ipynb)
+- Usar todos los meses de 2019 para capturar estacionalidad.
+- Mantener una muestra igual por mes para evitar que meses con mas volumen dominen el entrenamiento.
+- Usar una semilla fija para reproducibilidad.
+- Guardar en parquet para acelerar notebooks posteriores y evitar repetir ingestion cruda.
+- No limpiar ni modelar todavia: este documento solo crea una base estable y auditable.
 
-This stage converts the master table into a modeling-ready dataset. It removes invalid or implausible trips, handles impossible passenger counts, creates pickup-time and distance-derived features, and enriches trips with TLC zone metadata.
+Resultado clave:
 
-This is also where the project makes its most important leakage-control decisions.
+```text
+MASTER SHAPE: (12000000, 21)
+```
 
-Important preparation rules:
-- remove trips with invalid fare, distance, duration, or unrealistic speed
-- avoid post-trip monetary variables such as total charges and tips
-- avoid realized trip-duration fields as model inputs
-- keep geography through borough and service-zone features
-- retain `pickup_month_num` only as an evaluation helper, not as a raw predictor
+### 2. `02_cleaninig.ipynb`: limpieza y feature engineering
 
-### 3. Model Comparison
+Este notebook transforma la tabla maestra en un dataset listo para machine learning. Es el paso donde se toman las decisiones mas importantes de calidad de datos y control de leakage.
 
-Notebook: [03_model_comparison.ipynb](notebooks/03_model_comparison.ipynb)
+Que hace:
 
-This stage compares several regression approaches under the same chronological train-test split:
+- Carga la tabla maestra y el lookup oficial de zonas TLC.
+- Audita valores nulos antes de modificar datos.
+- Elimina registros estructuralmente incompletos.
+- Convierte timestamps de pickup y dropoff para validacion.
+- Calcula `duration_min` y `speed_mph` solo como variables auxiliares de limpieza.
+- Filtra viajes imposibles o implausibles.
+- Convierte pasajeros imposibles en missing values y crea `passenger_count_missing`.
+- Crea variables de calendario y hora.
+- Crea transformaciones de distancia.
+- Une informacion geografica de pickup y dropoff con el taxi zone lookup.
+- Elimina columnas que podrian producir leakage.
+- Exporta `data/procesed/taxi_2019_modeling_ready.parquet`.
 
-- dummy median baseline
-- ridge regression
-- random forest
-- gradient boosting
+Filtros principales:
 
-The purpose is to identify whether more flexible nonlinear models justify their extra complexity before moving into hyperparameter tuning.
+- `fare_amount > 0`.
+- `trip_distance > 0`.
+- `duration_min > 0`.
+- `duration_min < 360` minutos.
+- `speed_mph > 0`.
+- `speed_mph < 120`.
 
-Evaluation metrics:
-- MAE
-- RMSE
-- R²
+Decisiones de leakage:
 
-### 4. Hyperparameter Tuning and Final Evaluation
+- Se eliminan variables monetarias posteriores al viaje: `total_amount`, `tip_amount`, `tolls_amount`, `extra`, `mta_tax`, `improvement_surcharge`, `congestion_surcharge` y `airport_fee`.
+- Se eliminan campos de pago o comportamiento posterior como `payment_type`.
+- Se eliminan timestamps crudos y variables derivadas de duracion real del viaje.
+- `pickup_month_num` se conserva solo para hacer splits cronologicos y analisis por mes; no se usa como predictor directo.
 
-Notebook: [04_hyperparameter_tuning_and_evaluation.ipynb](notebooks/04_hyperparameter_tuning_and_evaluation.ipynb)
+Features finales:
 
-This stage tunes both `GradientBoostingRegressor` and `RandomForestRegressor` with grouped cross-validation by month, retrains the tuned models on the full training window, and evaluates both on the same held-out months.
+- Target y split: `fare_amount`, `pickup_month_num`.
+- Distancia: `trip_distance`, `log_trip_distance`, `trip_distance_sq`.
+- Interacciones: `distance_x_rush`, `distance_x_weekend`.
+- Pasajeros: `passenger_count`, `passenger_count_missing`.
+- Calendario y hora: `pickup_weekday`, `is_weekend`, `hour_sin`, `hour_cos`, `month_sin`, `month_cos`, `is_rush_hour`, `is_night`, `is_peak_daytime`.
+- Geografia: `PULocationID`, `DOLocationID`, `pickup_borough`, `dropoff_borough`, `pickup_service_zone`, `dropoff_service_zone`.
+- Indicadores espaciales: `is_airport_pickup`, `is_airport_dropoff`, `same_borough_trip`, `manhattan_trip`.
 
-The final notebook includes:
-- side-by-side tuned model comparison
-- holdout MAE, RMSE, and R²
-- median and high-percentile absolute error checks
-- shares of predictions within small dollar-error thresholds
-- performance by month
-- performance by fare band
-- predicted-vs-actual plots
-- residual diagnostics
-- worst-case error review
+Resultados clave:
 
-## Important Project Decisions
+```text
+rows kept after trip validation: 11792502
+share kept: 0.9857
+final model shape: (11792502, 28)
+```
 
-These are the most important things for a new reader to understand:
+### 3. `03_model_comparison.ipynb`: comparacion inicial de modelos
 
-1. The project uses a chronological split, not a random split.
-Training uses earlier months and testing uses later months so the evaluation is closer to a real forecasting setup.
+Este notebook establece el primer benchmark de modelos usando el dataset limpio. La meta no es optimizar todavia, sino comparar familias de modelos bajo las mismas reglas.
 
-2. Leakage prevention is a first-class design choice.
-The final models avoid using variables that are only known after the trip ends or after payment is processed.
+Que hace:
 
-3. Data cleaning is not cosmetic here.
-Removing impossible trips and corrupted targets is essential because fare prediction is highly sensitive to bad records.
+- Carga `taxi_2019_modeling_ready.parquet`.
+- Divide el dataset cronologicamente.
+- Usa enero a octubre para entrenamiento y noviembre a diciembre para prueba.
+- Toma muestras fijas para acelerar la comparacion inicial.
+- Define 22 columnas numericas y 4 categoricas.
+- Construye pipelines separados para modelos lineales y modelos de arboles.
+- Evalua todos los modelos con MAE, RMSE y R2.
 
-4. The notebooks are intentionally staged.
-Each notebook has one job, which makes the project easier to audit, explain, and rerun.
+Modelos comparados:
 
-5. Saved model binaries are not versioned in Git.
-Large `.joblib` artifacts are ignored so the repository stays lightweight and GitHub-friendly.
+- `DummyRegressor` con estrategia de mediana.
+- `Ridge` como modelo lineal regularizado.
+- `RandomForestRegressor`.
+- `GradientBoostingRegressor`.
 
-## How To Read This Project
+Decisiones de preprocesamiento:
 
-If you are new to the repository, the fastest path is:
+- Para Ridge: imputacion numerica por mediana, escalado con `StandardScaler`, imputacion categorica por moda y one-hot encoding.
+- Para modelos de arboles: imputacion numerica por mediana, imputacion categorica por moda y one-hot encoding sin escalado.
+- Usar el mismo target, split y metricas para que la comparacion sea justa.
 
-1. Read this README for the high-level story.
-2. Open [01_master_table_creation.ipynb](notebooks/01_master_table_creation.ipynb) to understand how the base dataset is formed.
-3. Open [02_cleaninig.ipynb](notebooks/02_cleaninig.ipynb) to understand the modeling rules and leakage controls.
-4. Open [03_model_comparison.ipynb](notebooks/03_model_comparison.ipynb) to see the first benchmark across model families.
-5. Open [04_hyperparameter_tuning_and_evaluation.ipynb](notebooks/04_hyperparameter_tuning_and_evaluation.ipynb) for the final tuning and diagnostic evaluation.
+Resultados de la comparacion inicial:
 
-## How To Run
+```text
+model              MAE     RMSE      R2
+random_forest      1.563   3.736   0.897
+gradient_boosting  1.576   3.861   0.890
+ridge              1.831   4.027   0.880
+dummy_median       6.554  12.212  -0.099
+```
 
-Run the notebooks in order because each one depends on outputs from the previous stage:
+Conclusion de este documento:
 
-1. [01_master_table_creation.ipynb](notebooks/01_master_table_creation.ipynb)
-2. [02_cleaninig.ipynb](notebooks/02_cleaninig.ipynb)
-3. [03_model_comparison.ipynb](notebooks/03_model_comparison.ipynb)
-4. [04_hyperparameter_tuning_and_evaluation.ipynb](notebooks/04_hyperparameter_tuning_and_evaluation.ipynb)
+- Los modelos no lineales superan a Ridge y al baseline simple.
+- Random Forest logra el mejor resultado inicial, aunque Gradient Boosting queda muy cerca.
+- Tiene sentido pasar a tuning con Random Forest y Gradient Boosting, no con todos los modelos.
 
-The intermediate parquet outputs are intentionally reused so later notebooks do not need to repeat the full raw-data ingestion step.
+### 4. `04_hyperparameter_tuning_and_evaluation.ipynb`: tuning y evaluacion final
 
-## Deliverables
+Este notebook ajusta los dos modelos mas fuertes de la comparacion inicial y los evalua de forma mas profunda en el holdout cronologico.
 
-Main analytical deliverables:
-- a unified 2019 master dataset
-- a cleaned, modeling-ready fare dataset
-- a baseline model comparison notebook
-- a tuned two-model evaluation notebook
+Que hace:
 
-Main communication deliverables:
-- notebook text rewritten as a guided report
-- README rewritten as a project overview for new readers
+- Reutiliza el dataset limpio y el split enero-octubre vs noviembre-diciembre.
+- Toma una muestra de tuning de 250,000 filas balanceada por mes.
+- Usa `GroupKFold(n_splits=5)` agrupando por `pickup_month_num`.
+- Ejecuta `RandomizedSearchCV` con 16 combinaciones por modelo.
+- Optimiza con `neg_root_mean_squared_error`.
+- Reentrena cada mejor pipeline sobre todo el entrenamiento disponible.
+- Evalua en el holdout completo de noviembre y diciembre.
+- Analiza errores por mes, por banda de tarifa y casos extremos.
 
-## Next Useful Extensions
+Espacios de busqueda principales:
 
-Natural next steps for the project would be:
-- add feature importance or permutation importance analysis
-- compare performance by borough or airport-trip segment
-- package the final scoring pipeline into a script or small app
-- add environment and dependency instructions if the repo will be shared widely
+- Gradient Boosting: `n_estimators`, `learning_rate`, `max_depth`, `min_samples_leaf`, `subsample`, `max_features`.
+- Random Forest: `n_estimators`, `max_depth`, `min_samples_split`, `min_samples_leaf`, `max_features`, `bootstrap`.
+
+Metricas finales en holdout:
+
+```text
+model              MAE     RMSE     R2      median_abs_error  p90_abs_error  within_$1  within_$2  within_$5
+random_forest      1.520   5.516   0.799   0.863             3.197          0.556      0.794      0.957
+gradient_boosting  1.576   5.546   0.797   0.931             3.230          0.528      0.786      0.957
+```
+
+Decision de modelaje:
+
+- Random Forest es el mejor modelo final por MAE, RMSE, R2, error mediano y porcentaje de predicciones dentro de 1 y 2 dolares.
+- Gradient Boosting queda muy cerca y sigue siendo util, especialmente porque su artefacto guardado es mucho mas liviano y facil de cargar para interpretacion.
+- El holdout muestra que diciembre es mas dificil que noviembre para ambos modelos, con RMSE cercano a 7.05 en diciembre frente a alrededor de 3.33-3.40 en noviembre.
+- Los peores errores se concentran en tarifas extremadamente altas o casos raros, lo que eleva el RMSE aunque el error mediano sea bajo.
+
+### 5. `05_model_interpretation_and_reporting.ipynb`: interpretacion y reporte
+
+Este notebook convierte los modelos entrenados en explicaciones mas comunicables. Su objetivo es cerrar el proyecto con interpretabilidad y analisis de segmentos, no solo con metricas globales.
+
+Que hace:
+
+- Carga el dataset limpio y revisa modelos guardados en `reports/models`.
+- Detecta que `gradient_boosting_tuned.joblib` es liviano y cargable.
+- Detecta que `random_forest_tuned.joblib` existe pero pesa aproximadamente 20.393 GB, por lo que no se carga en un notebook normal.
+- Evalua el modelo cargable en el holdout.
+- Selecciona el mejor modelo cargable para interpretacion.
+- Calcula importancias internas del modelo.
+- Agrupa importancias one-hot a nivel de feature original.
+- Calcula permutation importance sobre una muestra de holdout.
+- Genera partial dependence plots para drivers numericos.
+- Resume errores por borough y banda de tarifa.
+
+Decision practica:
+
+- Aunque Random Forest es el mejor modelo por metricas finales, Gradient Boosting se usa como modelo interpretado porque su archivo es pequeno y manejable.
+- Esta decision separa dos criterios: mejor performance final vs facilidad de interpretacion/reporte.
+
+Resultados del modelo interpretado:
+
+```text
+model              MAE     RMSE     R2      median_abs_error  p90_abs_error  within_$2  within_$5
+gradient_boosting  1.576   5.546   0.797   0.931             3.230          0.786      0.957
+```
+
+Drivers principales por importancia interna:
+
+```text
+log_trip_distance  0.405
+trip_distance      0.374
+trip_distance_sq   0.178
+DOLocationID       0.021
+hour_cos           0.004
+```
+
+Drivers principales por permutation importance:
+
+```text
+log_trip_distance     3.573
+trip_distance         2.782
+trip_distance_sq      1.491
+DOLocationID          0.442
+pickup_borough        0.223
+PULocationID          0.212
+hour_cos              0.160
+is_airport_dropoff    0.146
+```
+
+Lectura del resultado:
+
+- La distancia domina claramente la prediccion de tarifa.
+- La geografia tambien importa, especialmente destino, origen, boroughs y aeropuertos.
+- Las variables temporales ayudan, pero pesan menos que distancia y ubicacion.
+- El error aumenta en segmentos de tarifa mas alta.
+- Manhattan tiene el mayor volumen y un MAE bajo, mientras que EWR y Staten Island muestran errores mas altos por menor volumen y viajes mas caros/particulares.
+
+## Decisiones de modelaje explicadas
+
+### 1. Split cronologico
+
+El proyecto entrena con enero-octubre y evalua con noviembre-diciembre. Esta decision evita una evaluacion demasiado optimista que podria ocurrir con un split aleatorio, porque en produccion normalmente se predicen viajes futuros, no registros mezclados del mismo periodo.
+
+### 2. Control de target leakage
+
+El modelo solo debe usar informacion disponible al momento de estimar la tarifa. Por eso se eliminan variables que se conocen despues del viaje, incluyendo montos finales, propinas, peajes y tipo de pago. Tambien se evita usar duracion real como predictor, porque la duracion completa solo se conoce al terminar el viaje.
+
+### 3. Limpieza agresiva de viajes imposibles
+
+La tarifa es sensible a registros corruptos. Un viaje con distancia cero, duracion negativa o velocidad imposible puede distorsionar mucho la funcion aprendida. Por eso se filtran viajes invalidos antes de modelar.
+
+### 4. Distancia como feature principal
+
+Se conserva `trip_distance` y se agregan `log_trip_distance` y `trip_distance_sq`. Esto permite capturar relaciones no lineales: tarifas cortas, medias y largas no necesariamente crecen igual en dolares por milla.
+
+### 5. Variables ciclicas para hora y mes
+
+En vez de usar hora cruda de forma lineal, el proyecto usa `hour_sin`, `hour_cos`, `month_sin` y `month_cos`. Esto representa correctamente que las 23:00 y las 00:00 estan cerca en el ciclo diario.
+
+### 6. Geografia interpretable
+
+El proyecto usa IDs de zona y tambien borough/service zone. Los IDs conservan detalle espacial, mientras que borough y service zone permiten explicar resultados de forma mas comprensible.
+
+### 7. Baseline antes de modelos complejos
+
+Se incluye un modelo dummy por mediana para saber cuanto valor real aporta el machine learning. Tambien se incluye Ridge para tener un punto de comparacion lineal antes de justificar modelos mas costosos.
+
+### 8. Tuning solo para candidatos fuertes
+
+Despues del benchmark inicial, solo Random Forest y Gradient Boosting pasan a tuning. Esto evita gastar computo en modelos que ya mostraron menor potencial.
+
+### 9. Cross-validation agrupada por mes
+
+El tuning usa `GroupKFold` por `pickup_month_num`. Asi se reduce el riesgo de validar con particiones que mezclan demasiado patrones temporales dentro de los mismos meses.
+
+### 10. Performance final vs interpretabilidad
+
+Random Forest gana en metricas finales, pero su artefacto local es muy grande para un flujo de interpretacion comodo. Gradient Boosting queda muy cerca en performance y es mucho mas facil de cargar, por lo que se usa para el notebook de reporte interpretativo.
+
+## Resultado final del proyecto
+
+El mejor modelo por performance final es Random Forest:
+
+```text
+MAE: 1.5198
+RMSE: 5.5158
+R2: 0.7991
+Median absolute error: 0.8628
+Predicciones dentro de $2: 79.42%
+Predicciones dentro de $5: 95.71%
+```
+
+El modelo interpretado principal es Gradient Boosting:
+
+```text
+MAE: 1.5757
+RMSE: 5.5457
+R2: 0.7969
+Median absolute error: 0.9308
+Predicciones dentro de $2: 78.56%
+Predicciones dentro de $5: 95.71%
+```
+
+La lectura general es que ambos modelos predicen bastante bien la mayoria de viajes normales. El error mediano esta por debajo de 1 dolar, pero el RMSE sube por outliers y tarifas extremadamente altas.
+
+## Como leer el proyecto
+
+Orden recomendado:
+
+1. Leer este README para entender la historia completa.
+2. Abrir `notebooks/01_master_table_creation.ipynb` para ver como se construye la tabla maestra.
+3. Abrir `notebooks/02_cleaninig.ipynb` para revisar limpieza, leakage y features.
+4. Abrir `notebooks/03_model_comparison.ipynb` para ver el benchmark inicial.
+5. Abrir `notebooks/04_hyperparameter_tuning_and_evaluation.ipynb` para tuning, evaluacion final y diagnosticos.
+6. Abrir `notebooks/05_model_interpretation_and_reporting.ipynb` para interpretacion, importancia de variables y lectura de segmentos.
+
+## Como ejecutar
+
+Ejecutar los notebooks en orden, porque cada etapa depende de archivos producidos por la anterior:
+
+1. `notebooks/01_master_table_creation.ipynb`
+2. `notebooks/02_cleaninig.ipynb`
+3. `notebooks/03_model_comparison.ipynb`
+4. `notebooks/04_hyperparameter_tuning_and_evaluation.ipynb`
+5. `notebooks/05_model_interpretation_and_reporting.ipynb`
+
+Los parquet intermedios permiten que los notebooks posteriores no tengan que repetir la carga completa de CSV crudos.
+
+## Entregables
+
+Entregables de datos:
+
+- `data/procesed/master_2019_1M_per_month.parquet`
+- `data/procesed/taxi_2019_modeling_ready.parquet`
+
+Entregables analiticos:
+
+- Benchmark inicial de modelos.
+- Tuning de Random Forest y Gradient Boosting.
+- Evaluacion final en holdout cronologico.
+- Diagnosticos por mes y por banda de tarifa.
+- Interpretacion con feature importance, permutation importance y partial dependence.
+
+Entregables de comunicacion:
+
+- Notebooks escritos como reporte guiado.
+- README actualizado como resumen ejecutivo y tecnico del proyecto.
+
+## Limitaciones y proximos pasos
+
+Limitaciones actuales:
+
+- La muestra esta balanceada a 1,000,000 viajes por mes, no es todo el universo crudo completo.
+- `trip_distance` se usa como predictor; esto es razonable si la distancia estimada esta disponible al momento de cotizar, pero debe aclararse para casos de uso en tiempo real.
+- Los outliers de tarifas extremadamente altas todavia generan errores grandes.
+- El artefacto de Random Forest es muy pesado para interpretacion ligera.
+
+Posibles extensiones:
+
+- Entrenar una version mas compacta del mejor modelo para deployment.
+- Probar modelos gradient boosting modernos como HistGradientBoosting, XGBoost, LightGBM o CatBoost.
+- Agregar validacion por airport trips, borough pairs y franjas horarias.
+- Tratar tarifas extremas con winsorization, modelos robustos o evaluacion separada de outliers.
+- Crear un script reproducible de entrenamiento fuera de notebooks.
+- Agregar `requirements.txt` o ambiente conda para reproducibilidad completa.
